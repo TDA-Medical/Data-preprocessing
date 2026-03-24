@@ -1,0 +1,284 @@
+================================================================================
+              DESCRIPTION — Algorithms & Mathematical Logic
+================================================================================
+
+This document describes every algorithm and mathematical operation used in the
+codebase, organized by pipeline stage.
+
+
+================================================================================
+STAGE 1: DATA PREPROCESSING
+================================================================================
+
+1.1  Selective Log Transformation
+---------------------------------
+File: data_preprocessing/preprocess_pipeline_gpu.py (compute_skew_kurtosis)
+
+For each gene column, we compute population skewness and excess kurtosis:
+
+  Given values x_1, ..., x_n for a gene:
+
+    mean = (1/n) * sum(x_i)
+    std  = sqrt( (1/n) * sum((x_i - mean)^2) )
+
+    skewness       = (1/n) * sum((x_i - mean)^3) / std^3
+    excess_kurtosis = (1/n) * sum((x_i - mean)^4) / std^4  -  3
+
+  Decision rule:
+    If |skewness| > 2.0  OR  excess_kurtosis > 10.0:
+      Apply log1p:  x_i' = log(1 + x_i)
+
+  Rationale: TPM values are right-skewed. log1p stabilizes variance and
+  makes distributions more symmetric for downstream linear models, while
+  preserving zero values (log1p(0) = 0).
+
+
+1.2  ComBat Batch Effect Correction
+------------------------------------
+File: data_preprocessing/gpu_combat.py
+
+The ComBat algorithm (Johnson et al., 2007) removes batch effects while
+preserving biological covariates of interest. It operates in 5 steps:
+
+STEP 1 — Design Matrix Construction:
+
+  D = [B | C]     shape: (n_samples, n_batch + n_covariates)
+
+  where B is one-hot encoded batch indicators, and C contains one-hot
+  encoded categorical covariates (dropping the first level to avoid
+  multicollinearity) and any continuous covariates.
+
+STEP 2 — Standardization:
+
+  Fit OLS regression per gene:
+
+    X = D * beta + epsilon     (solved via least squares)
+
+    B_hat = (D^T D)^{-1} D^T X^T     shape: (n_design, n_features)
+
+  Compute grand mean (weighted by batch sizes):
+
+    grand_mean_j = sum_i (n_i / N) * B_hat[i, j]     for gene j
+
+  Compute covariate-only effects (zero out batch columns in D):
+
+    covar_effects = (D_no_batch * B_hat)^T
+
+  Compute pooled variance:
+
+    var_pooled_j = (1/N) * sum( (X_j - D * B_hat_j)^2 )
+
+  Standardize:
+
+    s_j = (X_j - grand_mean_j - covar_effects_j) / sqrt(var_pooled_j)
+
+STEP 3 — L/S Model (Location-Scale):
+
+  For each batch i, estimate:
+
+    gamma_hat[i, j] = location shift for gene j in batch i
+                      (via OLS of s on batch indicators)
+
+    delta_hat[i, j] = var(s_j among samples in batch i)
+                      (scale factor for gene j in batch i)
+
+  Compute empirical Bayes hyperparameters:
+
+    gamma_bar_j = mean(gamma_hat[:, j])     prior mean for location
+    t2_j        = var(gamma_hat[:, j])      prior variance for location
+
+    For scale (inverse-gamma prior):
+      m = mean(delta_hat[i, :])
+      s2 = var(delta_hat[i, :])
+      a_prior_i = (2*s2 + m^2) / s2        shape parameter
+      b_prior_i = (m*s2 + m^3) / s2        scale parameter
+
+STEP 4 — Parametric Empirical Bayes:
+
+  Iteratively solve for posterior estimates until convergence (< 0.0001):
+
+    gamma_star[i, j] = (t2_j * n_i * gamma_hat[i,j] + delta_old_j * gamma_bar_j)
+                       / (t2_j * n_i + delta_old_j)
+
+    sum2_j = sum( (s_{ij} - gamma_star[i,j])^2 )    over samples in batch i
+
+    delta_star[i, j] = (0.5 * sum2_j + b_prior_i)
+                       / (n_i/2 + a_prior_i - 1)
+
+  gamma_star is the posterior mean of a Normal-Normal conjugate model.
+  delta_star is the posterior mean of a Normal-InverseGamma conjugate model.
+
+STEP 5 — Final Adjustment:
+
+  For each batch i:
+    s_corrected[:, batch_i] = (s[:, batch_i] - gamma_star[i]) / sqrt(delta_star[i])
+
+  Restore original scale:
+    X_corrected = s_corrected * sqrt(var_pooled) + grand_mean + covar_effects
+
+
+================================================================================
+STAGE 2: TOPOLOGICAL AUTOENCODER (TAE)
+================================================================================
+
+2.1  Network Architecture
+--------------------------
+File: TAE/models/model.py
+
+  Encoder: input_dim -> 1024 -> 256 -> latent_dim
+    - Each hidden layer: Linear -> BatchNorm1d -> LeakyReLU(0.2)
+    - Final layer: Linear (no activation, allows full real-valued latent space)
+
+  Decoder: latent_dim -> 256 -> 1024 -> input_dim
+    - Each hidden layer: Linear -> BatchNorm1d -> LeakyReLU(0.2)
+    - Final layer: Linear -> ReLU (enforces non-negative output for TPM values)
+
+
+2.2  Topological Loss Function
+-------------------------------
+File: TAE/models/loss.py
+
+  Total Loss = L_recon + lambda * L_topo
+
+  Reconstruction Loss:
+    L_recon = MSE(x_original, x_reconstructed)
+            = (1/n) * sum( (x_i - x_hat_i)^2 )
+
+  Topological Loss (distance matrix matching):
+
+    1. Compute pairwise Euclidean distance matrix for a mini-batch:
+
+       D_ij = sqrt( sum_k (x_ik - x_jk)^2 + eps )
+
+       where eps = 1e-8 for numerical stability.
+
+       This is computed efficiently as:
+         D^2 = ||x||^2 * 1^T + 1 * ||x||^{2T} - 2 * X * X^T
+
+    2. Normalize both distance matrices to [0, 1]:
+
+       D_norm = D / max(D)
+
+    3. Compare normalized distances:
+
+       L_topo = MSE(D_norm_latent, D_norm_original)
+
+  The topological loss enforces that if two samples are close (far) in the
+  original gene expression space, they should also be close (far) in the
+  latent space. This preserves the topological structure (neighborhood
+  relationships, connected components, loops) during dimensionality reduction.
+
+  lambda (topo_weight) controls the trade-off. Higher values prioritize
+  structure preservation over reconstruction accuracy.
+
+
+2.3  Training
+--------------
+File: TAE/training/train.py
+
+  Optimizer: Adam (lr=1e-4, weight_decay=1e-5)
+  Batch size: >= 64 recommended (small batches produce noisy distance matrices)
+  The weight decay acts as L2 regularization on model parameters.
+
+
+================================================================================
+STAGE 3: LATENT SPACE AUGMENTATION & VISUALIZATION
+================================================================================
+
+3.1  Borderline-SMOTE
+----------------------
+File: TAE/training/latent_vis.py
+
+  Borderline-SMOTE (Han et al., 2005) targets minority samples near the
+  decision boundary ("danger zone"):
+
+    1. For each minority sample x_i, find its k nearest neighbors.
+    2. If more than half of the neighbors are majority class, x_i is
+       classified as a "borderline" (danger) sample.
+    3. Generate synthetic samples only from borderline samples:
+
+       x_new = x_i + lambda * (x_nn - x_i)
+
+       where x_nn is a randomly chosen minority neighbor of x_i,
+       and lambda ~ Uniform(0, 1).
+
+  Applied in the TAE latent space (not the original 20,876-dimensional space)
+  to balance Normal (734) vs Tumor (9,160) classes.
+
+  Advantages of augmenting in latent space:
+  - Lower dimensionality makes nearest-neighbor search more meaningful
+  - The TAE's topological loss ensures the latent space preserves
+    structural relationships, so synthetic samples are biologically coherent
+  - Much faster than augmenting in 20,876 dimensions
+
+
+3.2  UMAP (Uniform Manifold Approximation and Projection)
+----------------------------------------------------------
+File: TAE/training/latent_vis.py
+
+  UMAP (McInnes et al., 2018) projects high-dimensional data to 2D for
+  visualization while preserving both local and global structure.
+
+  Parameters used:
+    n_components = 2       (2D projection)
+    n_neighbors  = 15      (local neighborhood size)
+    min_dist     = 0.1     (minimum distance between points in 2D)
+    random_state = 42      (reproducibility)
+
+
+================================================================================
+STAGE 0: EXPLORATORY DATA ANALYSIS
+================================================================================
+
+0.1  Welch's T-Test (Unequal Variance)
+---------------------------------------
+Files: data_analysis/analyze_tcga.py, analyze_tcga_fullscan.py, etc.
+
+  Tests whether mean gene expression differs between tumor and normal groups.
+
+    t = (mean_tumor - mean_normal) / sqrt(s1^2/n1 + s2^2/n2)
+
+  Applied on log2(TPM+1) transformed values. Uses Welch's approximation
+  for degrees of freedom (does not assume equal variance).
+
+
+0.2  Point-Biserial Correlation
+--------------------------------
+  Measures correlation between a continuous variable (gene expression)
+  and a binary variable (tumor/normal). Equivalent to Pearson correlation
+  when one variable is dichotomous.
+
+    r_pb = (M_1 - M_0) / s_n * sqrt(n_0 * n_1 / n^2)
+
+  where M_1, M_0 are group means and s_n is the pooled standard deviation.
+
+
+0.3  Chi-Square Test of Independence
+--------------------------------------
+  Tests whether categorical variables (e.g., TSS_Code and tumor status)
+  are independent.
+
+    chi^2 = sum( (O_ij - E_ij)^2 / E_ij )
+
+  where O_ij are observed frequencies and E_ij = (row_total * col_total) / N.
+
+  Cramer's V quantifies effect size:
+    V = sqrt( chi^2 / (N * min(r-1, c-1)) )
+
+
+0.4  Mann-Whitney U Test
+--------------------------
+File: data_analysis/bad_genes_analysis.py
+
+  Non-parametric test comparing distributions of |PB_Corr| between bad
+  and not-bad genes. Does not assume normality.
+
+
+0.5  Volcano Plot
+------------------
+  Scatter plot of Log2 Fold Change (x-axis) vs -log10(p-value) (y-axis).
+  Genes in upper-left/right corners show both large effect size and high
+  statistical significance. Thresholds: |Log2FC| > 1 and p < 0.05.
+
+
+================================================================================

@@ -1,0 +1,2 @@
+/home/lucius/바탕화면/cancer_research_wTDA/data_preprocessing/preprocess_pipeline.py:82: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+  merged_df['TSS_Code'] = merged_df.index.str[:12].map(patient_to_tss)

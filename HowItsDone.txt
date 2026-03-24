@@ -1,0 +1,147 @@
+================================================================================
+                        HOW IT'S DONE — Problems & Solutions
+================================================================================
+
+This document describes the engineering problems encountered during development
+and how each was resolved.
+
+
+1. OOM Kill During Log Transformation
+--------------------------------------
+PROBLEM:
+  The preprocessing pipeline called scipy.stats.skew() and kurtosis() on the
+  entire (10,005 x 21,348) gene expression matrix at once. This materialized
+  a ~1.6 GB numpy array plus intermediate copies, exceeding available RAM.
+  The Linux OOM killer terminated the process.
+
+ROOT CAUSE:
+  scipy's nan_policy='omit' wraps every column in a masked array and scans
+  for NaN values. With 21,348 genes and 10,005 samples, this overhead
+  multiplied memory usage far beyond what a single-pass computation requires.
+
+SOLUTION:
+  Replaced scipy calls with pure numpy moment calculations, processed in
+  chunks of 1,000 genes at a time:
+
+    mean = vals.mean(axis=0)
+    diff = vals - mean
+    std  = sqrt((diff**2).sum(axis=0) / n)
+    skew = ((diff**3).sum(axis=0) / n) / std**3
+    kurt = ((diff**4).sum(axis=0) / n) / std**4 - 3.0
+
+  Each chunk uses only ~80 MB. The selective log1p transformation criteria
+  (|skewness| > 2.0 or excess kurtosis > 10.0) are unchanged.
+
+FILES CHANGED:
+  data_preprocessing/preprocess_pipeline.py
+  data_preprocessing/preprocess_pipeline_gpu.py
+
+
+2. OOM Kill During neuroCombat Batch Effect Correction
+------------------------------------------------------
+PROBLEM:
+  neuroCombat processes all ~21,000 genes simultaneously, creating large
+  intermediate matrices (design matrix inversions, standardization, empirical
+  Bayes iterations). With ~10,000 samples and 456 batches, this exceeded RAM.
+
+ROOT CAUSE:
+  neuroCombat is a single-threaded, CPU-only library that loads the entire
+  gene x sample matrix into memory and performs multiple matrix operations
+  on it simultaneously.
+
+SOLUTION (CPU - preprocess_pipeline.py):
+  Split genes into chunks and run neuroCombat on each chunk in parallel
+  using Python multiprocessing. Key design choices:
+  - Workers limited to min(4, cpu_count-1) to control memory
+  - Lazy argument generation (generator, not list) to avoid pre-allocating
+    all chunk data at once
+  - neuroCombat's internal stdout suppressed to keep progress bar clean
+  - ETA displayed based on elapsed time per completed chunk
+
+  TRADE-OFF: Splitting genes changes empirical Bayes prior estimates since
+  each chunk estimates its own prior from fewer genes. With ~2,600 genes per
+  chunk, the practical impact is negligible.
+
+SOLUTION (GPU - preprocess_pipeline_gpu.py + gpu_combat.py):
+  Reimplemented the entire ComBat algorithm in PyTorch:
+  - All matrix operations run on GPU (RTX 4060, 8GB VRAM)
+  - float32 precision to fit within VRAM (neuroCombat itself uses float32
+    for its design matrix)
+  - In-place tensor operations to minimize peak VRAM usage
+  - All ~21,000 genes processed at once (no chunking needed), preserving
+    exact empirical Bayes estimates
+
+  Result: ComBat step went from ~15-30 minutes (CPU) to 2.8 seconds (GPU).
+
+FILES CHANGED:
+  data_preprocessing/preprocess_pipeline.py (CPU parallel version)
+  data_preprocessing/gpu_combat.py (new — PyTorch ComBat)
+  data_preprocessing/preprocess_pipeline_gpu.py (new — GPU pipeline)
+
+
+3. CUDA Out of Memory in GPU ComBat (float64)
+----------------------------------------------
+PROBLEM:
+  Initial GPU ComBat implementation used float64. With shape (20,876 x 9,894),
+  each matrix occupies ~1.56 GB. Multiple simultaneous tensors (X, residuals,
+  fitted values, mod_mean, var_pooled) exceeded 8 GB VRAM.
+
+SOLUTION:
+  - Switched to float32 (halves memory per tensor to ~0.78 GB)
+  - In-place operations: X.sub_(), X.div_() instead of creating new tensors
+  - Explicit del + torch.cuda.empty_cache() after intermediate results
+  - Reused the X tensor as s_data (standardized data) in-place
+
+FILES CHANGED:
+  data_preprocessing/gpu_combat.py
+
+
+4. DataFrame Fragmentation Warning
+-----------------------------------
+PROBLEM:
+  After the chunked log transformation loop, pandas raised:
+  "DataFrame is highly fragmented. This is usually the result of calling
+  frame.insert many times."
+
+ROOT CAUSE:
+  Modifying different column subsets in a loop causes pandas to store each
+  modified block separately in memory, wasting RAM and slowing access.
+
+SOLUTION:
+  Added merged_df = merged_df.copy() after the log transform loop to
+  consolidate the DataFrame into a single contiguous memory block before
+  the memory-intensive ComBat step.
+
+FILES CHANGED:
+  data_preprocessing/preprocess_pipeline.py
+  data_preprocessing/preprocess_pipeline_gpu.py
+
+
+5. Wrong Working Directory
+--------------------------
+PROBLEM:
+  Running `python preprocess_pipeline.py` from inside the data_preprocessing/
+  directory caused FileNotFoundError because file paths are relative to the
+  project root (e.g., 'GSE62944_RAW/...').
+
+SOLUTION:
+  Run from project root: `python data_preprocessing/preprocess_pipeline.py`.
+  Documented in CLAUDE.md.
+
+
+6. Borderline-SMOTE Results Not Saved
+-------------------------------------
+PROBLEM:
+  The latent_vis.py script applied Borderline-SMOTE in latent space and
+  generated UMAP visualizations, but did not save the augmented data.
+
+SOLUTION:
+  Added CSV export for both original and SMOTE-augmented latent vectors:
+  - TAE/results/latent_{dim}d.csv         (original)
+  - TAE/results/latent_{dim}d_smote.csv   (augmented)
+
+FILES CHANGED:
+  TAE/training/latent_vis.py
+
+
+================================================================================
