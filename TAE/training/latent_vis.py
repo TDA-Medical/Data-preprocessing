@@ -44,9 +44,9 @@ LATENT_DIMS = [16, 32, 64]
 # Mapping from latent_dim -> weight file path
 # Adjust these paths if your weight files are named differently
 WEIGHT_PATHS = {
-    16: 'TAE/tae_trained.pth',
-    32: 'TAE/tae_dim32.pth',
-    64: 'TAE/tae_dim64.pth',
+    16: 'TAE/models/tae_dim16.pth',
+    32: 'TAE/models/tae_dim32.pth',
+    64: 'TAE/models/tae_dim64.pth',
 }
 
 UMAP_PARAMS = dict(n_components=2, n_neighbors=15, min_dist=0.1, random_state=42)
@@ -154,7 +154,7 @@ def main():
         print(f"  Processing latent_dim = {dim}")
         print(f"{'='*50}")
 
-        weight_path = WEIGHT_PATHS.get(dim, f'TAE/tae_dim{dim}.pth')
+        weight_path = WEIGHT_PATHS.get(dim, f'TAE/models/tae_dim{dim}.pth')
         if not os.path.exists(weight_path):
             print(f"  [SKIP] Weight file not found: {weight_path}")
             print(f"         Train first: python TAE/training/train.py --dimension {dim} --output {weight_path}")

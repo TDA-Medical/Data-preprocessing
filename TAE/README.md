@@ -40,7 +40,10 @@ from TAE.training.train import train_tae
 
 df = pd.read_csv('data_preprocessing/cleaned_tcga_tpm_for_TAE.csv', index_col=0)
 X = df.drop(columns=['Target']).values
+y = df['Target'].values
 X_tensor = torch.tensor(X, dtype=torch.float32)
 
-trained_model = train_tae(X_tensor, input_dim=X.shape[1], latent_dim=16, epochs=100, topo_weight=0.5)
+# labels를 전달하면 stratified train/val split + 분류 성능 지표 자동 계산
+trained_model, history = train_tae(X_tensor, input_dim=X.shape[1], latent_dim=16,
+                                   epochs=100, topo_weight=0.5, labels=y)
 ```

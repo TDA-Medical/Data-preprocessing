@@ -144,4 +144,24 @@ FILES CHANGED:
   TAE/training/latent_vis.py
 
 
+7. Missing Training Logs and Model Checkpoint
+---------------------------------------------
+PROBLEM:
+  Training the Topological Autoencoder (TAE) did not save the best model based
+  on validation loss, nor did it keep a record of the training metrics per epoch.
+
+SOLUTION:
+  Updated the training loop to:
+  - Track `best_val_loss` and save a copy of the best model state during training
+    to avoid saving overfitted models.
+  - Automatically load the best model state before returning from `train_tae()`.
+  - Save per-epoch training/val losses and classification metrics to a CSV file
+    (`TAE/results/training_log_dim{dim}_{timestamp}.csv`).
+  - Save a JSON summary of training parameters and final metrics
+    (`TAE/results/training_summary_dim{dim}_{timestamp}.json`).
+
+FILES CHANGED:
+  TAE/training/train.py
+
+
 ================================================================================
