@@ -22,8 +22,20 @@ def compute_skew_kurtosis(values):
     return skewness, kurtosis
 
 
+# TCGA-BRCA project TSS (Tissue Source Site) codes
+BRCA_TSS = {'A1','A2','A7','A8','AC','AN','AO','AQ','AR','B6','BH',
+            'C8','D8','E2','E9','EW','GM','GI','HN','LD','LL','MS',
+            'OL','PE','PL','S3','UL','UU','WT','XX','Z7'}
+
+
+def _is_brca(barcode):
+    """Check if a TCGA barcode belongs to the BRCA project via its TSS code."""
+    parts = str(barcode).split('-')
+    return len(parts) > 1 and parts[1] in BRCA_TSS
+
+
 def load_and_merge(tumor_file, normal_file):
-    """Load tumor/normal TPM data, transpose to (samples x genes), and merge."""
+    """Load tumor/normal TPM data, transpose to (samples x genes), merge, and filter to BRCA."""
     print("Loading Tumor TPM data...")
     tumor_df = pd.read_csv(tumor_file, sep='\t', index_col=0).T
     print("Loading Normal TPM data...")
@@ -35,6 +47,13 @@ def load_and_merge(tumor_file, normal_file):
     print("Merging data...")
     merged = pd.concat([tumor_df, normal_df])
     del tumor_df, normal_df
+
+    # Filter to BRCA patients only
+    brca_mask = merged.index.map(_is_brca)
+    n_before = len(merged)
+    merged = merged[brca_mask]
+    print(f"BRCA filter: {n_before} -> {len(merged)} samples "
+          f"(Tumor={(merged['Target']==1).sum()}, Normal={(merged['Target']==0).sum()})")
     return merged
 
 

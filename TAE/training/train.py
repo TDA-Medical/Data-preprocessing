@@ -14,6 +14,13 @@ from sklearn.metrics import accuracy_score, roc_auc_score, f1_score, precision_s
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.model import TopologicalAutoencoder
 from models.loss import TopologicalLoss
+from models.loss_alternative import PearsonTopologicalLoss, CosineTopologicalLoss
+
+LOSS_CLASSES = {
+    'euclidean': TopologicalLoss,
+    'pearson': PearsonTopologicalLoss,
+    'cosine': CosineTopologicalLoss,
+}
 
 
 def _extract_latent(model, X, device, batch_size=512):
@@ -52,7 +59,8 @@ def _evaluate_latent_classifier(model, X_train, y_train, X_val, y_val, device):
 
 
 def train_tae(data_tensor, input_dim, latent_dim=16, epochs=100, batch_size=64, topo_weight=1.0,
-              labels=None, val_split=0.2, clf_every=10, log_dir='TAE/results'):
+              labels=None, val_split=0.2, clf_every=10, log_dir='TAE/results',
+              distance_metric='euclidean'):
     """
     Train a Topological Autoencoder on gene expression data.
 
@@ -67,6 +75,8 @@ def train_tae(data_tensor, input_dim, latent_dim=16, epochs=100, batch_size=64, 
                      enables stratified train/val split and classification metrics.
         val_split:   Fraction of data for validation (default: 0.2).
         clf_every:   Compute classification metrics every N epochs (default: 10).
+        distance_metric: Distance metric for topological loss. One of
+                     'euclidean', 'pearson', or 'cosine' (default: 'euclidean').
 
     Returns:
         (model, history) — trained model and dict of per-epoch losses / metrics.
@@ -75,7 +85,9 @@ def train_tae(data_tensor, input_dim, latent_dim=16, epochs=100, batch_size=64, 
     print(f"Device: {device}")
 
     model = TopologicalAutoencoder(input_dim=input_dim, latent_dim=latent_dim).to(device)
-    criterion = TopologicalLoss(topo_weight=topo_weight).to(device)
+    LossClass = LOSS_CLASSES[distance_metric]
+    criterion = LossClass(topo_weight=topo_weight).to(device)
+    print(f"Distance metric: {distance_metric} ({LossClass.__name__})")
     optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
     history = {
@@ -221,6 +233,7 @@ def train_tae(data_tensor, input_dim, latent_dim=16, epochs=100, batch_size=64, 
         'epochs': epochs,
         'batch_size': batch_size,
         'topo_weight': topo_weight,
+        'distance_metric': distance_metric,
         'val_split': val_split,
         'best_epoch': best_epoch,
         'best_val_loss': best_val_loss if best_val_loss != float('inf') else None,
@@ -258,6 +271,9 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs (default: 100)')
     parser.add_argument('--batch-size', type=int, default=64, help='Batch size (default: 64)')
     parser.add_argument('--topo-weight', type=float, default=0.5, help='Topological loss weight (default: 0.5)')
+    parser.add_argument('--distance-metric', type=str, default='euclidean',
+                        choices=['euclidean', 'pearson', 'cosine'],
+                        help='Distance metric for topological loss (default: euclidean)')
     parser.add_argument('--output', type=str, default='TAE/models/tae_dim16.pth', help='Output model path (default: TAE/models/tae_dim16.pth)')
     args = parser.parse_args()
 
@@ -270,12 +286,14 @@ if __name__ == "__main__":
     print(f"Data loaded: {X_tensor.shape[0]} samples, {X_tensor.shape[1]} genes")
     print(f"Class distribution: Normal={(y == 0).sum()}, Tumor={(y == 1).sum()}")
     print(f"Config: latent_dim={args.dimension}, epochs={args.epochs}, "
-          f"batch_size={args.batch_size}, topo_weight={args.topo_weight}")
+          f"batch_size={args.batch_size}, topo_weight={args.topo_weight}, "
+          f"distance_metric={args.distance_metric}")
 
     model, history = train_tae(X_tensor, input_dim=X_tensor.shape[1], latent_dim=args.dimension,
                                epochs=args.epochs, batch_size=args.batch_size,
                                topo_weight=args.topo_weight, labels=y,
-                               log_dir='TAE/results')
+                               log_dir='TAE/results',
+                               distance_metric=args.distance_metric)
 
     output_dir = os.path.dirname(args.output)
     if output_dir:

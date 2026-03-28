@@ -171,6 +171,51 @@ File: TAE/models/loss.py
   lambda (topo_weight) controls the trade-off. Higher values prioritize
   structure preservation over reconstruction accuracy.
 
+  --- Alternative Distance Metrics ---
+  File: TAE/models/loss_alternative.py
+
+  Euclidean distance can suffer from the curse of dimensionality in
+  high-dimensional spaces: pairwise distances converge, making it harder
+  to distinguish topological structure.  Two alternative metrics are
+  provided, selectable via the --distance-metric flag during training.
+
+  (a) Pearson Correlation Distance:
+
+      1. Mean-center each sample (row-wise):
+
+         x_centered_i = x_i - mean(x_i)
+
+      2. Compute Pearson correlation (= cosine similarity of centered vectors):
+
+         r_ij = (x_centered_i . x_centered_j)
+                / (||x_centered_i|| * ||x_centered_j||)
+
+      3. Convert to distance:
+
+         D_ij = 1 - r_ij          range: [0, 2]
+
+      Pearson distance captures linear co-expression patterns between samples,
+      independent of absolute magnitude.  Two samples with proportional gene
+      expression profiles have D = 0, regardless of scaling.
+
+  (b) Cosine Distance:
+
+      1. Compute cosine similarity:
+
+         cos(x_i, x_j) = (x_i . x_j) / (||x_i|| * ||x_j||)
+
+      2. Convert to distance:
+
+         D_ij = 1 - cos(x_i, x_j)     range: [0, 2]
+
+      Cosine distance measures angular divergence between sample vectors.
+      Unlike Pearson, it does not center the data, so it is sensitive to
+      mean expression level but invariant to vector magnitude.
+
+  Both alternatives follow the same normalization and MSE comparison steps
+  as the Euclidean version (normalize D to [0, 1], then MSE between
+  D_norm_latent and D_norm_original).
+
 
 2.3  Training
 --------------

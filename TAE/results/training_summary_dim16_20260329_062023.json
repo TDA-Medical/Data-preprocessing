@@ -1,0 +1,26 @@
+{
+  "timestamp": "20260329_062023",
+  "latent_dim": 16,
+  "epochs": 100,
+  "batch_size": 64,
+  "topo_weight": 0.5,
+  "distance_metric": "pearson",
+  "val_split": 0.2,
+  "best_epoch": 99,
+  "best_val_loss": 2354.7029044858873,
+  "best_val_recon": 2354.6727334299394,
+  "best_val_topo": 0.06029135685774588,
+  "final_train_loss": 2502.112290905368,
+  "final_train_recon": 2502.084722703503,
+  "final_train_topo": 0.05514861000401358,
+  "final_val_loss": 2516.142889207409,
+  "final_val_recon": 2516.11269452495,
+  "final_val_topo": 0.06039931997656822,
+  "final_clf_metrics": {
+    "accuracy": 0.9267306720565942,
+    "auc": 0.7895612393428988,
+    "f1": 0.9619322656865319,
+    "precision": 0.926656550328781,
+    "recall": 1.0
+  }
+}

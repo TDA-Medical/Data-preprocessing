@@ -164,4 +164,37 @@ FILES CHANGED:
   TAE/training/train.py
 
 
+8. Alternative Distance Metrics for Topological Loss
+-----------------------------------------------------
+PROBLEM:
+  The topological loss computed pairwise distances using Euclidean distance.
+  In high-dimensional gene expression space (~20,876 dimensions), Euclidean
+  distances between samples converge (curse of dimensionality), weakening
+  the topological loss signal and making it harder to preserve the true
+  neighborhood structure of the data.
+
+SOLUTION:
+  Implemented two alternative distance metrics as separate loss classes,
+  keeping the original Euclidean loss unchanged:
+
+  - PearsonTopologicalLoss: Uses Pearson correlation distance (1 - r).
+    Captures linear co-expression patterns, invariant to scaling and shift.
+    Computed efficiently as cosine similarity on mean-centered vectors.
+
+  - CosineTopologicalLoss: Uses cosine distance (1 - cos_sim).
+    Captures angular similarity between expression profiles, invariant to
+    vector magnitude.
+
+  Both classes share the same interface as TopologicalLoss (forward returns
+  total_loss, recon_loss, topo_loss), enabling drop-in replacement.
+
+  Added --distance-metric CLI argument to train.py (choices: euclidean,
+  pearson, cosine) so the metric can be selected at training time.
+  The chosen metric is recorded in the JSON training summary.
+
+FILES CHANGED:
+  TAE/models/loss_alternative.py  (new — Pearson & Cosine loss classes)
+  TAE/training/train.py           (--distance-metric argument, LOSS_CLASSES dispatch)
+
+
 ================================================================================
