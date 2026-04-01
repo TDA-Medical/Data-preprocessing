@@ -6,6 +6,7 @@ from datetime import datetime
 import numpy as np
 import torch
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
@@ -13,13 +14,22 @@ from sklearn.metrics import accuracy_score, roc_auc_score, f1_score, precision_s
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.model import TopologicalAutoencoder
-from models.loss import TopologicalLoss
+from models.loss import TopologicalLoss, AdaptiveTopologicalLoss
 from models.loss_alternative import PearsonTopologicalLoss, CosineTopologicalLoss
+from models.sinkhorn_cosine_loss import SinkhornCosineLoss
+from models.sinkhorn_pearson_loss import SinkhornPearsonLoss
+from models.sinkhorn_euclidean_loss import SinkhornEuclideanLoss
 
 LOSS_CLASSES = {
     'euclidean': TopologicalLoss,
     'pearson': PearsonTopologicalLoss,
     'cosine': CosineTopologicalLoss,
+}
+
+SINKHORN_LOSS_CLASSES = {
+    'euclidean': SinkhornEuclideanLoss,
+    'pearson': SinkhornPearsonLoss,
+    'cosine': SinkhornCosineLoss,
 }
 
 
@@ -60,39 +70,47 @@ def _evaluate_latent_classifier(model, X_train, y_train, X_val, y_val, device):
 
 def train_tae(data_tensor, input_dim, latent_dim=16, epochs=100, batch_size=64, topo_weight=1.0,
               labels=None, val_split=0.2, clf_every=10, log_dir='TAE/results',
-              distance_metric='euclidean'):
+              distance_metric='euclidean', adaptive=False, sinkhorn=False,
+              topo_multiplier=1.0):
     """
     Train a Topological Autoencoder on gene expression data.
-
-    Args:
-        data_tensor: Input tensor of shape (n_samples, n_genes).
-        input_dim:   Number of genes (features).
-        latent_dim:  Latent space dimension (default: 16).
-        epochs:      Number of training epochs (default: 100).
-        batch_size:  Mini-batch size. Should be >= 64 for stable topological loss.
-        topo_weight: Weight for the topological loss term (default: 1.0).
-        labels:      Class labels array (0=Normal, 1=Tumor). When provided,
-                     enables stratified train/val split and classification metrics.
-        val_split:   Fraction of data for validation (default: 0.2).
-        clf_every:   Compute classification metrics every N epochs (default: 10).
-        distance_metric: Distance metric for topological loss. One of
-                     'euclidean', 'pearson', or 'cosine' (default: 'euclidean').
-
-    Returns:
-        (model, history) — trained model and dict of per-epoch losses / metrics.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
     model = TopologicalAutoencoder(input_dim=input_dim, latent_dim=latent_dim).to(device)
-    LossClass = LOSS_CLASSES[distance_metric]
-    criterion = LossClass(topo_weight=topo_weight).to(device)
-    print(f"Distance metric: {distance_metric} ({LossClass.__name__})")
-    optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+
+    # Use Sinkhorn loss if requested
+    if sinkhorn:
+        LossClass = SINKHORN_LOSS_CLASSES[distance_metric]
+        criterion = LossClass(topo_multiplier=topo_multiplier).to(device)
+        optimizer = optim.Adam(
+            list(model.parameters()) + list(criterion.parameters()),
+            lr=1e-4, weight_decay=1e-5,
+        )
+        print(f"Distance metric: {distance_metric} | Sinkhorn Optimal Transport Loss enabled ({LossClass.__name__})")
+        print(f"  [Config] topo_multiplier: {topo_multiplier}")
+        # Sinkhorn loss always uses adaptive weighting via internal log_var_recon/topo
+        adaptive = True 
+    elif adaptive:
+        criterion = AdaptiveTopologicalLoss(distance_metric=distance_metric).to(device)
+        optimizer = optim.Adam(
+            list(model.parameters()) + list(criterion.parameters()),
+            lr=1e-4, weight_decay=1e-5,
+        )
+        print(f"Distance metric: {distance_metric} | Adaptive loss weighting enabled (Kendall et al., 2018)")
+    else:
+        LossClass = LOSS_CLASSES[distance_metric]
+        criterion = LossClass(topo_weight=topo_weight).to(device)
+        optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+        print(f"Distance metric: {distance_metric} ({LossClass.__name__})")
 
     history = {
         'train_total': [], 'train_recon': [], 'train_topo': [],
     }
+    if adaptive:
+        history['w_recon'] = []
+        history['w_topo'] = []
 
     best_val_loss = float('inf')
     best_val_recon = None
@@ -128,6 +146,29 @@ def train_tae(data_tensor, input_dim, latent_dim=16, epochs=100, batch_size=64, 
         train_loader = DataLoader(TensorDataset(data_tensor), batch_size=batch_size, shuffle=True)
         val_loader = None
 
+    # --- Initialize Sinkhorn sigma_lat ---
+    if sinkhorn:
+        import math
+        with torch.no_grad():
+            x_init = next(iter(train_loader))[0].to(device)
+            _, z_init = model(x_init)
+            if distance_metric == 'euclidean':
+                d_init = torch.cdist(z_init, z_init, p=2)
+            elif distance_metric == 'pearson':
+                z_c = z_init - z_init.mean(dim=1, keepdim=True)
+                z_n = z_c / torch.sqrt(torch.clamp((z_c**2).sum(dim=1, keepdim=True), min=1e-8))
+                d_init = torch.clamp(1.0 - z_n @ z_n.T, min=0.0)
+            else: # cosine
+                z_n = z_init / torch.sqrt(torch.clamp((z_init**2).sum(dim=1, keepdim=True), min=1e-8))
+                d_init = torch.clamp(1.0 - z_n @ z_n.T, min=0.0)
+            
+            init_sigma = d_init.median().item()
+            if init_sigma <= 0: init_sigma = 0.5
+            # We use log(exp(init_sigma) - 1) because softplus(x) = log(1+exp(x))
+            # So softplus(log(exp(s)-1)) = log(1 + exp(s) - 1) = s
+            criterion.log_sigma_lat.data.fill_(math.log(math.exp(init_sigma) - 1.0))
+            print(f"  [Sinkhorn] Initialized sigma_lat to {init_sigma:.4f}")
+
     # --- Training loop ---
     for epoch in range(epochs):
         # Training pass
@@ -151,6 +192,15 @@ def train_tae(data_tensor, input_dim, latent_dim=16, epochs=100, batch_size=64, 
         history['train_total'].append(total / n_train)
         history['train_recon'].append(recon / n_train)
         history['train_topo'].append(topo / n_train)
+
+        if adaptive:
+            # Note: Sinkhorn losses also have log_var_recon/topo parameters
+            prec_r = torch.exp(-criterion.log_var_recon)
+            prec_t = torch.exp(-criterion.log_var_topo)
+            w_r = 0.5 * prec_r.item()
+            w_t = 0.5 * prec_t.item()
+            history['w_recon'].append(w_r)
+            history['w_topo'].append(w_t)
 
         # Validation pass
         if val_loader is not None:
@@ -189,6 +239,9 @@ def train_tae(data_tensor, input_dim, latent_dim=16, epochs=100, batch_size=64, 
                 log += (f" | Val - Total: {history['val_total'][-1]:.4f}  "
                         f"Recon: {history['val_recon'][-1]:.4f}  "
                         f"Topo: {history['val_topo'][-1]:.4f}")
+            if adaptive:
+                log += (f" | Weights - w_r: {history['w_recon'][-1]:.4f}  "
+                        f"w_t: {history['w_topo'][-1]:.4f}")
             print(log)
 
         # Classification metrics (periodic)
@@ -222,6 +275,9 @@ def train_tae(data_tensor, input_dim, latent_dim=16, epochs=100, batch_size=64, 
         log_df['val_total'] = history['val_total']
         log_df['val_recon'] = history['val_recon']
         log_df['val_topo'] = history['val_topo']
+    if 'w_recon' in history:
+        log_df['w_recon'] = history['w_recon']
+        log_df['w_topo'] = history['w_topo']
     csv_path = os.path.join(log_dir, f'training_log_dim{latent_dim}_{timestamp}.csv')
     log_df.to_csv(csv_path, index=False)
     print(f"Training log saved: {csv_path}")
@@ -232,7 +288,10 @@ def train_tae(data_tensor, input_dim, latent_dim=16, epochs=100, batch_size=64, 
         'latent_dim': latent_dim,
         'epochs': epochs,
         'batch_size': batch_size,
-        'topo_weight': topo_weight,
+        'adaptive_weighting': adaptive,
+        'sinkhorn': sinkhorn,
+        'topo_multiplier': topo_multiplier if sinkhorn else None,
+        'topo_weight': topo_weight if not (adaptive or sinkhorn) else None,
         'distance_metric': distance_metric,
         'val_split': val_split,
         'best_epoch': best_epoch,
@@ -254,6 +313,14 @@ def train_tae(data_tensor, input_dim, latent_dim=16, epochs=100, batch_size=64, 
             'precision': history['precision'][-1],
             'recall': history['recall'][-1],
         }
+    if adaptive:
+        summary['final_w_recon'] = history['w_recon'][-1]
+        summary['final_w_topo'] = history['w_topo'][-1]
+        summary['final_log_var_recon'] = criterion.log_var_recon.item()
+        summary['final_log_var_topo'] = criterion.log_var_topo.item()
+    if sinkhorn:
+        summary['final_sigma_lat'] = (F.softplus(criterion.log_sigma_lat) + 1e-6).item()
+
     json_path = os.path.join(log_dir, f'training_summary_dim{latent_dim}_{timestamp}.json')
     with open(json_path, 'w') as f:
         json.dump(summary, f, indent=2)
@@ -274,6 +341,13 @@ if __name__ == "__main__":
     parser.add_argument('--distance-metric', type=str, default='euclidean',
                         choices=['euclidean', 'pearson', 'cosine'],
                         help='Distance metric for topological loss (default: euclidean)')
+    parser.add_argument('--adaptive', action='store_true',
+                        help='Use adaptive loss weighting via learned uncertainty (Kendall et al., 2018). '
+                             'When enabled, --topo-weight is ignored.')
+    parser.add_argument('--sinkhorn', action='store_true',
+                        help='Use Sinkhorn-based Optimal Transport loss. (Automatically enables adaptive weighting)')
+    parser.add_argument('--topo-multiplier', type=float, default=1.0,
+                        help='Multiplier for Sinkhorn topological loss (default: 1.0)')
     parser.add_argument('--output', type=str, default='TAE/models/tae_dim16.pth', help='Output model path (default: TAE/models/tae_dim16.pth)')
     args = parser.parse_args()
 
@@ -285,15 +359,24 @@ if __name__ == "__main__":
     X_tensor = torch.tensor(X, dtype=torch.float32)
     print(f"Data loaded: {X_tensor.shape[0]} samples, {X_tensor.shape[1]} genes")
     print(f"Class distribution: Normal={(y == 0).sum()}, Tumor={(y == 1).sum()}")
+    
+    if args.sinkhorn:
+        weight_info = f"Sinkhorn (Adaptive), multiplier={args.topo_multiplier}"
+    else:
+        weight_info = "adaptive" if args.adaptive else f"topo_weight={args.topo_weight}"
+        
     print(f"Config: latent_dim={args.dimension}, epochs={args.epochs}, "
-          f"batch_size={args.batch_size}, topo_weight={args.topo_weight}, "
+          f"batch_size={args.batch_size}, {weight_info}, "
           f"distance_metric={args.distance_metric}")
 
     model, history = train_tae(X_tensor, input_dim=X_tensor.shape[1], latent_dim=args.dimension,
                                epochs=args.epochs, batch_size=args.batch_size,
                                topo_weight=args.topo_weight, labels=y,
                                log_dir='TAE/results',
-                               distance_metric=args.distance_metric)
+                               distance_metric=args.distance_metric,
+                               adaptive=args.adaptive,
+                               sinkhorn=args.sinkhorn,
+                               topo_multiplier=args.topo_multiplier)
 
     output_dir = os.path.dirname(args.output)
     if output_dir:
