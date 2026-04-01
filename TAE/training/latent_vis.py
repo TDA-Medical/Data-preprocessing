@@ -1,5 +1,5 @@
 """
-[Step 3] Latent vector extraction, Borderline-SMOTE, and UMAP visualization.
+Extract latent vectors, run Borderline-SMOTE, and generate UMAP plots.
 """
 
 import os
@@ -16,11 +16,10 @@ from umap import UMAP
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.model import TopologicalAutoencoder
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+# Config
 DATA_PATH = 'data_preprocessing/cleaned_tcga_tpm_for_TAE.csv'
 RESULTS_DIR = 'TAE/results'
+
 
 LATENT_DIMS = [16, 32, 64]
 DISTANCE_METRICS = ['euclidean', 'pearson', 'cosine']

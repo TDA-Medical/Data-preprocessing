@@ -5,12 +5,8 @@ import math
 
 class SinkhornCosineLoss(nn.Module):
     """
-    Sinkhorn Topological Loss using Cosine Distance.
-    
-    Optimized with:
-    1. Non-in-place masking for backprop stability.
-    2. Tensor-only median to avoid GPU-CPU sync.
-    3. Envelope Theorem (detaching duals) for memory-efficient gradients.
+    Sinkhorn Topological Loss (Cosine distance).
+    Using detached duals for f, g to save memory.
     """
     def __init__(self, eps=0.1, num_iters=50, sigma_orig=None, topo_multiplier=1.0):
         super().__init__()

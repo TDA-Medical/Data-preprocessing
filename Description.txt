@@ -247,68 +247,27 @@ File: TAE/models/loss.py  (AdaptiveTopologicalLoss)
   Usage: --adaptive flag in train.py (ignores --topo-weight).
 
 
-2.4  Sinkhorn Topological Loss (Evolution: Planned vs. Finalized)
---------------------------------------------------------------
+2.4  Sinkhorn Topological Loss
+------------------------------
 
-The Sinkhorn topological loss replaces element-wise MSE with Optimal Transport
-(OT). This section details the development from the initial concept to the 
-highly optimized final implementation.
+We swapped the MSE topological loss with a Sinkhorn (Optimal Transport) loss.
+MSE just compares distances element-wise, which isn't great. Sinkhorn treats each
+sample's distances as a distribution and calculates the cost to map the original
+distribution to the latent one.
 
-### PHASE 1: Planned (Original Concept)
-The initial goal was to treat each sample's relationship to the batch as a 
-probability distribution and measure the cost of transforming the original 
-distribution into the latent one using the Sinkhorn algorithm.
+Implementation notes to fix some issues I ran into:
+- The standard loop eats up too much VRAM for backprop. I used the Envelope Theorem
+  (detaching the duals f and g after convergence) so we only backprop through the final
+  cost.
+- Added a `topo_multiplier`. Sinkhorn distances are tiny (~0.6) compared to the
+  reconstruction MSE (~10k). Without this multiplier, the topo gradients are basically
+  ignored even with adaptive weighting.
+- The Sinkhorn divergence was sometimes dipping below zero. I switched it to the
+  fully debiased version: OT(orig, lat) - 0.5*OT(lat, lat) - 0.5*OT(orig, orig).
+  Now it's properly bounded at >= 0.
+- All iterations are in log-space (logsumexp) so we don't get NaN/underflows when
+  epsilon is small.
 
-  1. Pairwise Distance Matrices:
-     D_orig[i,j]   = dist(x_i, x_j)    (n x n)
-     D_latent[i,j] = dist(z_i, z_j)    (n x n)
-
-  2. Gaussian Kernel & Normalization:
-     Convert distances to similarities (S) and then to row-stochastic 
-     probability distributions (P).
-
-  3. Basic Sinkhorn Iterations:
-     Run the standard Sinkhorn loop to compute the OT cost, which would serve
-     as the topological loss.
-
-### PHASE 2: Finalized (Implementation & Optimizations)
-During implementation, several critical bottlenecks (memory, scale, stability) 
-were identified and solved with advanced engineering:
-
-  1. Mathematical Optimization: Envelope Theorem
-     - Problem: Backpropagating through 50+ Sinkhorn iterations consumes 
-       massive VRAM and slows training.
-     - Solution: After the loop, we .detach() the optimal dual variables (f, g). 
-       The gradient is computed analytically from these optimal values.
-     - Result: ~50x memory savings and significantly faster training without 
-       losing gradient accuracy.
-
-  2. Numerical Stability: Log-Domain Computation
-     - Problem: Standard Sinkhorn (exponential space) suffers from arithmetic 
-       underflow when epsilon is small.
-     - Solution: All iterations are performed in log-space using logsumexp.
-     - Result: Stable training even with very high precision requirements.
-
-  3. Magnitude Matching: Topo Multiplier
-     - Problem: Sinkhorn distance (~0.6) is orders of magnitude smaller than 
-       Reconstruction MSE (~10,000). Adaptive weighting alone couldn't prevent
-       the topo gradient from being "masked."
-     - Solution: Introduced a --topo-multiplier (10^1 to 10^5) to bring the 
-       topological loss into the same "weight class" as reconstruction.
-     - Result: The model effectively learns to preserve structure.
-
-  4. Automated Search: Multiplier Sweep
-     - Problem: The optimal balance between topo and recon is data-dependent.
-     - Solution: run_pipeline.sh now performs a random sweep of 3 multipliers
-       per run.
-     - Result: Experimental identification of the best scaling factor.
-
-  5. GPU Efficiency: Zero-Sync Operations
-     - Problem: .item() or in-place diagonal filling causes GPU-CPU 
-       bottlenecks or autograd errors.
-     - Solution: Used non-in-place masking (S * (1-I)) and GPU-only median 
-       tensors for bandwidth initialization.
-     - Result: 100% GPU utilization and stable backpropagation.
 
 
 2.5  Training

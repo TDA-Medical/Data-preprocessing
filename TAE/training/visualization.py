@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 def load_latest_logs(results_dir='TAE/results'):
-    """Load the latest JSON summary and corresponding CSV log for each (dimension, metric, sinkhorn, multiplier) config."""
+    # grabs the latest json and csv for each config so we don't plot old runs
     json_files = glob.glob(os.path.join(results_dir, 'training_summary_dim*.json'))
 
     # Group by (dimension, metric, sinkhorn, multiplier) and find the latest
@@ -22,7 +22,6 @@ def load_latest_logs(results_dir='TAE/results'):
         timestamp = data['timestamp']
         key = (dim, metric, sinkhorn, multiplier)
 
-        # Check if we already have a newer one for this config
         if key not in dim_logs or dim_logs[key]['timestamp'] < timestamp:
             csv_path = os.path.join(results_dir, f'training_log_dim{dim}_{timestamp}.csv')
             if os.path.exists(csv_path):
@@ -35,7 +34,7 @@ def load_latest_logs(results_dir='TAE/results'):
     return dim_logs
 
 def plot_learning_curves(dim_logs, save_dir='TAE/results'):
-    """Plot Train vs Val losses across epochs for each config."""
+    # plots train and val losses over time
     keys = sorted(dim_logs.keys())
     if not keys:
         print("No log files found.")
@@ -44,6 +43,7 @@ def plot_learning_curves(dim_logs, save_dir='TAE/results'):
     for (dim, metric, sinkhorn, mult) in keys:
         data = dim_logs[(dim, metric, sinkhorn, mult)]
         df = pd.read_csv(data['csv_path'])
+
 
         suffix = f" (Sinkhorn, m={mult})" if sinkhorn else ""
         save_suffix = f"_sinkhorn_m{mult}" if sinkhorn else ""

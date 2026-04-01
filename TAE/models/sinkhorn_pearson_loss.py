@@ -6,11 +6,7 @@ import math
 class SinkhornPearsonLoss(nn.Module):
     """
     Sinkhorn Topological Loss using Pearson Correlation Distance.
-    
-    Optimized with:
-    1. Non-in-place masking for backprop stability.
-    2. Tensor-only median to avoid GPU-CPU sync.
-    3. Envelope Theorem (detaching duals) for memory-efficient gradients.
+    Note: applied Envelope Theorem (detaching duals) to prevent OOM errors during backprop.
     """
     def __init__(self, eps=0.1, num_iters=50, sigma_orig=None, topo_multiplier=1.0):
         super().__init__()

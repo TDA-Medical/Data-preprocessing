@@ -34,7 +34,7 @@ SINKHORN_LOSS_CLASSES = {
 
 
 def _extract_latent(model, X, device, batch_size=512):
-    """Extract latent vectors in batches to avoid GPU OOM."""
+    # pull latents in batches so we don't OOM
     model.eval()
     parts = []
     with torch.no_grad():
@@ -46,10 +46,7 @@ def _extract_latent(model, X, device, batch_size=512):
 
 
 def _evaluate_latent_classifier(model, X_train, y_train, X_val, y_val, device):
-    """
-    Fit logistic regression on train latent vectors, evaluate on val.
-    Returns dict with accuracy, auc, f1, precision, recall.
-    """
+    # simple linear probe on the latent space
     z_train = _extract_latent(model, X_train, device)
     z_val = _extract_latent(model, X_val, device)
 
@@ -72,11 +69,9 @@ def train_tae(data_tensor, input_dim, latent_dim=16, epochs=100, batch_size=64, 
               labels=None, val_split=0.2, clf_every=10, log_dir='TAE/results',
               distance_metric='euclidean', adaptive=False, sinkhorn=False,
               topo_multiplier=1.0):
-    """
-    Train a Topological Autoencoder on gene expression data.
-    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
+
 
     model = TopologicalAutoencoder(input_dim=input_dim, latent_dim=latent_dim).to(device)
 

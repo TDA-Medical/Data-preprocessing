@@ -5,13 +5,8 @@ import math
 
 class SinkhornEuclideanLoss(nn.Module):
     """
-    Sinkhorn Topological Loss using Euclidean Distance.
-    
-    Optimized with:
-    1. torch.cdist for numerical stability (avoiding NaNs).
-    2. Non-in-place masking for backprop stability.
-    3. Tensor-only median to avoid GPU-CPU sync.
-    4. Envelope Theorem (detaching duals) for memory-efficient gradients.
+    Sinkhorn Topological Loss for Euclidean distance.
+    Uses torch.cdist for better stability instead of manual expansion.
     """
     def __init__(self, eps=0.1, num_iters=50, sigma_orig=None, topo_multiplier=1.0):
         super().__init__()
