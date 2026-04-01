@@ -3,5 +3,4 @@ TCGA_RNASeq_Clinical-master/
 __pycache__/
 *.pyc
 .env
-CLAUDE.md
 .gitignore
