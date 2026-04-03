@@ -61,48 +61,64 @@ Decoder:  z → 256 → 1024 → 20,862
 
 | Metric | Formula | Property |
 |--------|---------|----------|
-| **Euclidean** | $D_{ij} = \sqrt{\sum_k (x_{ik} - x_{jk})^2}$ | Absolute distance; suffers from curse of dimensionality |
-| **Cosine** | $D_{ij} = 1 - \frac{x_i \cdot x_j}{\|x_i\| \|x_j\|}$ | Angular divergence; magnitude-invariant |
-| **Pearson** | $D_{ij} = 1 - r_{ij}$ (Pearson correlation) | Co-expression pattern; shift+scale invariant |
+| **Euclidean** | `D_ij = √Σ(x_ik - x_jk)²` | Absolute distance; suffers from curse of dimensionality |
+| **Cosine** | `D_ij = 1 - (x·y)/(‖x‖·‖y‖)` | Angular divergence; magnitude-invariant |
+| **Pearson** | `D_ij = 1 - r_ij` (Pearson correlation) | Co-expression pattern; shift+scale invariant |
 
 ### 3.2 Loss Functions
 
 **Baseline — MSE Topological Loss:**
 
-$$\mathcal{L}_{total} = \mathcal{L}_{recon} + \lambda \cdot \mathcal{L}_{topo}$$
-$$\mathcal{L}_{recon} = \text{MSE}(x, \hat{x}), \quad \mathcal{L}_{topo} = \text{MSE}(\tilde{D}_{latent}, \tilde{D}_{original})$$
+```
+L_total = L_recon + λ · L_topo
+L_recon = MSE(x, x̂),   L_topo = MSE(D̃_latent, D̃_original)
+```
 
-where $\tilde{D} = D / \max(D)$ (min-max normalized pairwise distance matrix).
+where D̃ = D / max(D) (min-max normalized pairwise distance matrix).
 
 **Proposed — COAST (Cosine Optimized Adaptive Sinkhorn Transport) Loss:**
 
 1. Convert distances to probability distributions via Gaussian RBF kernel:
-$$P_{ij} = \frac{\exp(-D_{ij}^2 / 2\sigma^2)}{\sum_k \exp(-D_{ik}^2 / 2\sigma^2)}$$
+
+```
+P_ij = exp(-D²_ij / 2σ²) / Σ_k exp(-D²_ik / 2σ²)
+```
 
 2. Compute entropy-regularized OT via Sinkhorn iterations (log-domain, 50 iters):
-$$\text{OT}_\varepsilon(a, b) = \min_{\pi \in \Pi(a,b)} \langle C, \pi \rangle + \varepsilon \, \text{KL}(\pi \| a \otimes b)$$
+
+```
+OT_ε(a, b) = min_π∈Π(a,b) ⟨C, π⟩ + ε · KL(π ‖ a⊗b)
+```
 
 3. Debiased Sinkhorn divergence:
-$$S(a, b) = \text{OT}(a, b) - \tfrac{1}{2}\text{OT}(a, a) - \tfrac{1}{2}\text{OT}(b, b) \geq 0$$
 
-4. COAST loss with topo multiplier $m$ and adaptive weighting (Kendall et al., 2018):
-$$\mathcal{L}_{COAST} = \frac{1}{2}e^{-s_r}\mathcal{L}_{recon} + \frac{1}{2}e^{-s_t} \cdot m \cdot \mathcal{L}_{topo}^{Sink} + \frac{1}{2}s_r + \frac{1}{2}s_t$$
+```
+S(a, b) = OT(a, b) - ½·OT(a, a) - ½·OT(b, b) ≥ 0
+```
+
+4. COAST loss with topo multiplier `m` and adaptive weighting (Kendall et al., 2018):
+
+```
+L_COAST = ½·e^(-s_r)·L_recon + ½·e^(-s_t)·m·L_topo + ½·s_r + ½·s_t
+```
 
 ### 3.3 Adaptive Loss Weighting (Kendall et al., 2018)
 
-Learns task-specific uncertainty $s = \log(\sigma^2)$ for each loss term:
+Learns task-specific uncertainty s = log(σ²) for each loss term:
 
-$$\mathcal{L} = \frac{1}{2}e^{-s_r}\mathcal{L}_{recon} + \frac{1}{2}e^{-s_t}\mathcal{L}_{topo} + \frac{1}{2}s_r + \frac{1}{2}s_t$$
+```
+L = ½·e^(-s_r)·L_recon + ½·e^(-s_t)·L_topo + ½·s_r + ½·s_t
+```
 
-- $s_r, s_t$: `nn.Parameter`, trained jointly with model via Adam
+- `s_r`, `s_t`: `nn.Parameter`, trained jointly with model via Adam
 - Automatically balances reconstruction vs. topology preservation
-- Used in all COAST experiments; baseline uses fixed $\lambda = 1.0$
+- Used in all COAST experiments; baseline uses fixed λ = 1.0
 
 ### 3.4 Implementation Details
 
-- **Envelope Theorem**: Detach Sinkhorn dual variables $(f, g)$ after convergence; backprop only through final cost (~50x VRAM reduction)
+- **Envelope Theorem**: Detach Sinkhorn dual variables `(f, g)` after convergence; backprop only through final cost (~50x VRAM reduction)
 - **Log-domain Sinkhorn**: All iterations use logsumexp to prevent numerical underflow
-- **Learnable bandwidth** $\sigma$: initialized to median pairwise distance, trained jointly
+- **Learnable bandwidth** `σ`: initialized to median pairwise distance, trained jointly
 
 ---
 
