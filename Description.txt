@@ -247,13 +247,14 @@ File: TAE/models/loss.py  (AdaptiveTopologicalLoss)
   Usage: --adaptive flag in train.py (ignores --topo-weight).
 
 
-2.4  Sinkhorn Topological Loss
-------------------------------
+2.4  COAST Loss (Cosine Optimized Adaptive Sinkhorn Transport)
+--------------------------------------------------------------
 
-We swapped the MSE topological loss with a Sinkhorn (Optimal Transport) loss.
-MSE just compares distances element-wise, which isn't great. Sinkhorn treats each
-sample's distances as a distribution and calculates the cost to map the original
-distribution to the latent one.
+We swapped the MSE topological loss with the COAST loss, which combines cosine-based
+pairwise distance matrices with debiased Sinkhorn optimal transport under adaptive
+homoscedastic uncertainty weighting (Kendall et al., 2018). Unlike MSE which compares
+distances element-wise, COAST treats each sample's distances as a distribution and
+calculates the optimal transport cost to map the original distribution to the latent one.
 
 Implementation notes to fix some issues I ran into:
 - The standard loop eats up too much VRAM for backprop. I used the Envelope Theorem

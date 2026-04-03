@@ -1,6 +1,8 @@
-# Sinkhorn Topo Loss Notes
+# COAST Loss Notes
 
-This is a quick guide on the new Sinkhorn Optimal Transport (OT) topological loss added to the TAE pipeline.
+COAST = **C**osine **O**ptimized **A**daptive **S**inkhorn **T**ransport
+
+This is a quick guide on the COAST loss added to the TAE pipeline. COAST combines cosine-based pairwise distance matrices with debiased Sinkhorn divergence under adaptive homoscedastic uncertainty weighting (Kendall et al., 2018).
 
 ## What's changed
 
@@ -18,15 +20,15 @@ bash run_pipeline.sh --skip-preprocess
 ```
 
 In `TAE/training/train.py`, I added:
-- `--sinkhorn`: turns on the OT loss
+- `--sinkhorn`: turns on the COAST loss
 - `--topo-multiplier`: scales the topo loss (default 1.0)
 
 For the outputs, `latent_vis.py` will automatically grab all the sweep models and append the multiplier to the file name so we can tell them apart. `visualization.py` will also plot them together.
 
 ## The math
 
-Basically:
-Total Loss = Recon + (Multiplier * Topo) + Adaptive Uncertainty terms
+COAST loss:
+$$\mathcal{L}_{COAST} = \frac{1}{2}e^{-s_r}\mathcal{L}_{recon} + \frac{1}{2}e^{-s_t} \cdot m \cdot \mathcal{L}_{topo}^{Sink} + \frac{1}{2}s_r + \frac{1}{2}s_t$$
 
-Where Topo is the debiased version so it doesn't drop below 0:
+Where Topo is the debiased Sinkhorn divergence (bounded >= 0):
 Topo = OT(orig, lat) - 0.5 * OT(lat, lat) - 0.5 * OT(orig, orig)
